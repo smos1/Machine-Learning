@@ -1,0 +1,175 @@
+##Variable choice and data transformation  
+  
+At least half variables in dataset are aggregate variables that
+provide data on behavior of other variables within certain windows. These
+columns are mostly missing data; the only data present are in rows that have
+“yes” for “new window” variable. Now, if we were making predictions by
+chunks, e.g. we were evaluating a set of rows that are guaranteed to have
+the same “classe”, these variables could be useful. However, as we are
+making a model that makes predictions for single rows of data, we have no
+use for these variables. For similar reason I omit other variables that are
+related to certain “windows” or “groups” of readings – time, participant
+name, etc. Using these could lead to overfitting and the model would not be
+viable for general population.
+
+
+Loading data:
+
+```{r, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+training <-read.csv("pml-training.csv")
+```
+
+
+Removing aggregate or irrelevant variables:
+
+```{r}
+training1 <-subset(training, ,-c(kurtosis_roll_belt:skewness_yaw_belt))
+training1 <-subset(training1, ,-c(max_roll_belt:var_yaw_belt))
+training1 <-subset(training1, ,-c(var_accel_arm:var_yaw_arm))
+training1 <-subset(training1, ,-c(kurtosis_roll_arm:amplitude_yaw_arm))
+training1 <-subset(training1, ,-c(kurtosis_roll_dumbbell:amplitude_yaw_dumbbell))
+training1 <-subset(training1, ,-c(var_accel_dumbbell:var_yaw_dumbbell))
+training1 <-subset(training1, ,-c(kurtosis_roll_forearm:amplitude_yaw_forearm))
+training1 <-subset(training1, ,-c(var_accel_forearm:var_yaw_forearm))
+training2 <- subset(training1, ,-c(X:num_window))
+training3<- training2[,1:52]
+classepred<-training2[,53]
+```
+
+
+This function removes outliers. It is quite conservative, only meant
+to remove measurement errors:
+
+```{r}
+st_out <- function (x,z) {
+        outlier<- rep(1, nrow(x))
+        k<-ncol(x)
+        for (i in 1:k) {
+                myvector<-x[,i]
+                orderings<- order(myvector, decreasing=FALSE)
+                sizev<- length(myvector)
+                p<-(sizev-z+1)
+                minposition<-orderings[z]
+                maxposition<-orderings[p]
+                mymedian<-median(myvector)
+                lowlimit<- 2*myvector[minposition]-mymedian
+                highlimit<- 2*myvector[maxposition]-mymedian
+                for (g in 1:sizev)      {  
+                        if (myvector[g]<lowlimit | myvector[g]>highlimit) outlier[g]<-0
+                }
+        }
+        outlier
+}
+```
+
+
+Removing outliers with the function: 
+        
+```{r}
+remove<-st_out(training3, 10)
+remove<-as.logical(remove)
+training3<-subset(training3, remove)
+classepred<-subset(classepred, remove)
+```
+
+
+Clearing enviroment:
+        
+```{r}
+remove(training)
+remove(training1)
+remove(training2)
+```
+
+
+Removing highly correlated variables:
+
+```{r}
+removecor<-findCorrelation(cor(training3), cutoff = .90)
+training3<-training3[, -removecor]
+```
+
+
+As I plan to use cross-validation to choose number of variables to
+include in random forests training, it would be better to use holdout set to
+measure OOB error rate.  Training set is 80% and validation set is 20%.  
+
+```{r}
+inTrain<-createDataPartition(classepred, p=0.8, list=FALSE)
+trainingset<-training3[inTrain,]
+validationset<-training3[-inTrain,]
+classetrain<-classepred[inTrain]
+classevalid<-classepred[-inTrain]
+```
+
+
+Standardizing variables:
+
+```{r}
+centscale<-preProcess(trainingset, method=c("center","scale"))
+trainingset<-predict(centscale, trainingset)
+validationset<-predict(centscale, validationset)
+```
+  
+  
+##Training
+
+Selecting tree size. Cross-validation (rfcv function) shows that there are
+no significant benefits from increasing number of variables per tree above
+10. I use randomForest package instead of caret because it works faster for
+me.(i am not putting this code in markdown chunk, as it takes ages to
+compute)
+
+        modeling<- rfcv(trainingset, classetrain, step=0.7, scale="log", cv.fold=5, do.trace=TRUE, ntree=200)
+        modeling$error.cv
+
+Now for the actual training:
+
+```{r}
+modelfit<- randomForest(trainingset,classetrain, ntree=200, mtry=10)
+```
+
+
+##Validating
+
+After the training is completed, I use validation set to assess model accuracy. Model accuracy is ~ 99.5%. 
+
+```{r}
+val_pred<-predict(modelfit, validationset)
+confusionMatrix(val_pred, classevalid)
+```
+
+
+
+##Predicting values in test set
+
+All the same data transformations as in the training set:
+
+```{r}
+testing<-training <-read.csv("pml-testing.csv")
+testing1 <-subset(testing, ,-c(kurtosis_roll_belt:skewness_yaw_belt))
+
+testing1 <-subset(testing1, ,-c(max_roll_belt:var_yaw_belt))
+testing1 <-subset(testing1, ,-c(var_accel_arm:var_yaw_arm))
+testing1 <-subset(testing1, ,-c(kurtosis_roll_arm:amplitude_yaw_arm))
+testing1 <-subset(testing1, ,-c(kurtosis_roll_dumbbell:amplitude_yaw_dumbbell))
+testing1 <-subset(testing1, ,-c(var_accel_dumbbell:var_yaw_dumbbell))
+testing1 <-subset(testing1, ,-c(kurtosis_roll_forearm:amplitude_yaw_forearm))
+testing1 <-subset(testing1, ,-c(var_accel_forearm:var_yaw_forearm))
+
+testing2 <- subset(testing1, ,-c(X:num_window))
+testing3<- testing2[,1:52]
+testing3<-testing3[, -removecor]
+testing3<-predict(centscale, testing3)
+
+remove(testing)
+remove(testing1)
+remove(testing2)
+
+predict(modelfit, testing3)
+
+```
+
+
